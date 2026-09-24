@@ -12,6 +12,7 @@
 #include <vulkan/vk_layer.h>
 
 #include <atomic>
+#include <cctype>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -659,14 +660,70 @@ static void PollHotkeys(DeviceChain* dc) {
     Log("[hotkey] %s -> neural rendering %s", dlssnr::KeyNameFromCode(key), wasOn ? "off" : "on");
 }
 
+static std::string ProcessCommand0() {
+    FILE* f = fopen("/proc/self/cmdline", "rb");
+    if (!f) return {};
+
+    char buf[4096];
+    const size_t n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+
+    if (!n) return {};
+
+    size_t len = 0;
+    while (len < n && buf[len] != '\0') ++len;
+    return std::string(buf, len);
+}
+
+static std::string ExecutableBasename(std::string path) {
+    const size_t pos = path.find_last_of("/\\");
+    if (pos != std::string::npos) path.erase(0, pos + 1);
+    return path;
+}
+
+static bool EqualIgnoreCase(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+
+    for (size_t i = 0; i < a.size(); ++i) {
+        const unsigned char ca = static_cast<unsigned char>(a[i]);
+        const unsigned char cb = static_cast<unsigned char>(b[i]);
+
+        if (std::tolower(ca) != std::tolower(cb))
+            return false;
+    }
+
+    return true;
+}
+
+static bool ProcessAllowed() {
+    const char* filter = getenv("DLSSNR_PROCESS");
+    if (!filter || !*filter) return true;
+
+    const std::string actual = ExecutableBasename(ProcessCommand0());
+    const std::string wanted = ExecutableBasename(filter);
+    const bool match =
+        !actual.empty() && EqualIgnoreCase(actual, wanted);
+
+    Log("[layer] process filter: actual=%s wanted=%s -> %s",
+        actual.empty() ? "<unknown>" : actual.c_str(),
+        wanted.c_str(),
+        match ? "enabled" : "inert");
+
+    return match;
+}
+
 static bool LayerEnabled() {
     static const bool e = [] {
+        if (!ProcessAllowed()) return false;
         if (DuplicateLayerCopy()) return false;
+
         const char* v = getenv("VKLayer_DLSS5");
         if (v && v[0] == '1') return true;
+
         const char* o = getenv("DLSSNR_ENABLE");
         return o && o[0] == '1';
     }();
+
     return e;
 }
 
