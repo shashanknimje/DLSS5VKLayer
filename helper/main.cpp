@@ -278,6 +278,50 @@ static bool HasDeviceExt(VkPhysicalDevice phys, const char* name) {
     return false;
 }
 
+static int HexNibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool ParseGpuUuid(const char* text, uint8_t out[VK_UUID_SIZE]) {
+    if (!text || !*text) return false;
+
+    uint32_t byte = 0;
+    int high = -1;
+
+    for (const char* p = text; *p; ++p) {
+        if (*p == '-') continue;
+
+        const int nibble = HexNibble(*p);
+        if (nibble < 0) return false;
+
+        if (high < 0) {
+            high = nibble;
+        } else {
+            if (byte >= VK_UUID_SIZE) return false;
+            out[byte++] = uint8_t((high << 4) | nibble);
+            high = -1;
+        }
+    }
+
+    return byte == VK_UUID_SIZE && high < 0;
+}
+
+static std::string FormatGpuUuid(const uint8_t uuid[VK_UUID_SIZE]) {
+    char out[37];
+    std::snprintf(
+        out, sizeof(out),
+        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        uuid[0], uuid[1], uuid[2], uuid[3],
+        uuid[4], uuid[5],
+        uuid[6], uuid[7],
+        uuid[8], uuid[9],
+        uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]);
+    return out;
+}
+
 static bool CreateContext(VkCtx& c) {
     g_vkModule = LoadLibraryA("vulkan-1.dll");
     if (!g_vkModule) { Log("[helper] no vulkan-1.dll"); return false; }
@@ -330,20 +374,77 @@ static bool CreateContext(VkCtx& c) {
     LOAD(vkAllocateDescriptorSets) LOAD(vkUpdateDescriptorSets)
 #undef LOAD
 
+    const char* requestedUuidText = getenv("DLSSNR_GPU_UUID");
+    uint8_t requestedUuid[VK_UUID_SIZE]{};
+    const bool selectByUuid = requestedUuidText && *requestedUuidText;
+
+    if (selectByUuid) {
+        if (!ParseGpuUuid(requestedUuidText, requestedUuid)) {
+            Log("[helper] invalid DLSSNR_GPU_UUID: %s", requestedUuidText);
+            return false;
+        }
+        if (!vkGetPhysicalDeviceProperties2) {
+            Log("[helper] DLSSNR_GPU_UUID requested but vkGetPhysicalDeviceProperties2 is unavailable");
+            return false;
+        }
+        Log("[helper] requested GPU UUID: %s", FormatGpuUuid(requestedUuid).c_str());
+    }
+
     uint32_t devCount = 0;
     vkEnumeratePhysicalDevices(c.instance, &devCount, nullptr);
     std::vector<VkPhysicalDevice> phys(devCount);
     vkEnumeratePhysicalDevices(c.instance, &devCount, phys.data());
+
     for (auto p : phys) {
         VkPhysicalDeviceProperties props{};
         vkGetPhysicalDeviceProperties(p, &props);
+
         if (props.vendorID != 0x10DE) continue;
-        if (!HasDeviceExt(p, "VK_NVX_binary_import") || !HasDeviceExt(p, "VK_NVX_image_view_handle")) continue;
+        if (!HasDeviceExt(p, "VK_NVX_binary_import") ||
+            !HasDeviceExt(p, "VK_NVX_image_view_handle"))
+            continue;
+
+        std::string uuidText;
+
+        if (selectByUuid) {
+            VkPhysicalDeviceIDProperties id{};
+            id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+
+            VkPhysicalDeviceProperties2 props2{};
+            props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            props2.pNext = &id;
+
+            vkGetPhysicalDeviceProperties2(p, &props2);
+            uuidText = FormatGpuUuid(id.deviceUUID);
+
+            Log("[helper] candidate GPU: %s uuid=%s",
+                props.deviceName, uuidText.c_str());
+
+            if (std::memcmp(id.deviceUUID, requestedUuid, VK_UUID_SIZE) != 0)
+                continue;
+        }
+
         c.physical = p;
-        Log("[helper] device: %s", props.deviceName);
+
+        if (selectByUuid) {
+            Log("[helper] selected device: %s uuid=%s",
+                props.deviceName, uuidText.c_str());
+        } else {
+            Log("[helper] device: %s", props.deviceName);
+        }
+
         break;
     }
-    if (!c.physical) { Log("[helper] no NVIDIA device with NVX exts"); return false; }
+
+    if (!c.physical) {
+        if (selectByUuid) {
+            Log("[helper] no compatible NVIDIA device matching UUID %s",
+                FormatGpuUuid(requestedUuid).c_str());
+        } else {
+            Log("[helper] no NVIDIA device with NVX exts");
+        }
+        return false;
+    }
     c.opticalFlow = HasDeviceExt(c.physical, VK_NV_OPTICAL_FLOW_EXTENSION_NAME);
 
     uint32_t famCount = 0;
