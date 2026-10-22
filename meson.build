@@ -24,6 +24,7 @@ if host_system == 'linux' and host_cpu == 'x86_64'
   subdir('tools')
   subdir('gui')
   subdir('test_gui')
+  subdir('test_layer')
 elif host_system == 'linux' and host_cpu in ['x86', 'i686']
   subdir('layer_linux')
 elif host_system == 'windows' and host_cpu == 'x86_64'

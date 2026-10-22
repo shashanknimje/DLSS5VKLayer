@@ -224,6 +224,20 @@ VKLayer_DLSS5=1 %command%
 
 The layer is disabled unless `VKLayer_DLSS5=1` is present.
 
+To restrict injection to one executable, use the optional exact, case-insensitive
+`DLSSNR_PROCESS` basename filter (for example, `DLSSNR_PROCESS=RDR2.exe`).
+The filter prefers the command-line executable name for Proton/Wine games, then
+falls back to `/proc/self/exe` for native Linux programs such as Chrome, whose GPU
+subprocess may rewrite its command line. The diagnostic log reports whether
+`cmdline` or `proc-exe` matched. Omitting `DLSSNR_PROCESS` permits any Vulkan
+process launched with the layer enabled.
+
+For browser streaming, use a **dedicated browser profile** and enable the layer
+only in that launch environment; filtering `chrome` selects Chrome processes, not
+a particular URL or tab. Chrome's Vulkan support and presentation path must
+still be compatible with the layer.
+
+
 The layer is intended to coexist with the Steam overlay. If a game crashes during Vulkan device creation, make sure you are using `0.2.1-3` or newer.
 
 ## Steam / Proton Containers

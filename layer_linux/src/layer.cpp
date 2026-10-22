@@ -29,6 +29,7 @@
 #include "../../common/shm_protocol.h"
 #include "composition.h"
 #include "hotkey.h"
+#include "process_filter.h"
 #include "vk_table.h"
 
 #include <dlfcn.h>
@@ -675,41 +676,27 @@ static std::string ProcessCommand0() {
     return std::string(buf, len);
 }
 
-static std::string ExecutableBasename(std::string path) {
-    const size_t pos = path.find_last_of("/\\");
-    if (pos != std::string::npos) path.erase(0, pos + 1);
-    return path;
-}
-
-static bool EqualIgnoreCase(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) return false;
-
-    for (size_t i = 0; i < a.size(); ++i) {
-        const unsigned char ca = static_cast<unsigned char>(a[i]);
-        const unsigned char cb = static_cast<unsigned char>(b[i]);
-
-        if (std::tolower(ca) != std::tolower(cb))
-            return false;
-    }
-
-    return true;
-}
-
+// Preserve the Wine/Proton command-line identity; native Linux processes such as
+// Chromium may rewrite argv[0], so also accept the real /proc/self/exe name.
 static bool ProcessAllowed() {
     const char* filter = getenv("DLSSNR_PROCESS");
     if (!filter || !*filter) return true;
 
-    const std::string actual = ExecutableBasename(ProcessCommand0());
-    const std::string wanted = ExecutableBasename(filter);
-    const bool match =
-        !actual.empty() && EqualIgnoreCase(actual, wanted);
+    const std::string executablePath = dlssnr::process_filter::ReadExecutablePath();
+    const auto matchedBy = dlssnr::process_filter::Match(
+        filter, ProcessCommand0(), executablePath);
 
-    Log("[layer] process filter: actual=%s wanted=%s -> %s",
-        actual.empty() ? "<unknown>" : actual.c_str(),
-        wanted.c_str(),
-        match ? "enabled" : "inert");
+    const char* method = "none";
+    if (matchedBy == dlssnr::process_filter::MatchSource::CommandLine) method = "cmdline";
+    else if (matchedBy == dlssnr::process_filter::MatchSource::Executable) method = "proc-exe";
 
-    return match;
+    const std::string wantedName = dlssnr::process_filter::Basename(filter);
+    const std::string executableName = dlssnr::process_filter::Basename(executablePath);
+    Log("[layer] process filter: wanted=%s executable=%s matched_by=%s -> %s",
+        wantedName.c_str(),
+        executableName.empty() ? "<unknown>" : executableName.c_str(),
+        method, matchedBy == dlssnr::process_filter::MatchSource::None ? "inert" : "enabled");
+    return matchedBy != dlssnr::process_filter::MatchSource::None;
 }
 
 static bool LayerEnabled() {
